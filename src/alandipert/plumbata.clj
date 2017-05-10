@@ -10,6 +10,7 @@
                                            (children node))))))))]
     (walk (conj clojure.lang.PersistentQueue/EMPTY root))))
 
+(declare propagate)
 (declare propagate!)
 
 (defmacro ^:private with-let
@@ -17,6 +18,23 @@
   resource.  It's a cross between doto and with-open."
   [[binding resource] & body]
   `(let [~binding ~resource] ~@body ~binding))
+
+(def ^:dynamic *transaction* nil)
+
+(defn- dobatch*
+  [thunk]
+  (if *transaction*
+    (thunk)
+    (binding [*transaction* (ref (priority-map))]
+      (thunk)
+      (let [tx @*transaction*]
+        (binding [*transaction* nil]
+          (dosync
+           (propagate tx)))))))
+
+(defmacro dobatch
+  [& body]
+  `(dobatch* (fn [] ~@body)))
 
 ;; TODO Transactions/`dobatch`
 (defn- swap*
@@ -87,9 +105,16 @@
                             (map deref* @(.-arg-sources cell)))]
       (ref-set (.-state cell) next-state))))
 
+(defn add-sync!
+  [cell]
+  (dosync
+   (alter *transaction* assoc cell @(.-rank cell))))
+
 (defn propagate!
   [cell]
-  (propagate (priority-map cell @(.-rank cell))))
+  (if *transaction*
+    (doto cell add-sync!)
+    (propagate (priority-map cell @(.-rank cell)))))
 
 (defn set-formula!
   [this fn-source arg-sources]
